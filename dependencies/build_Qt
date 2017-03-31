@@ -1,0 +1,221 @@
+#! /bin/bash
+
+source "buildutils.sh"
+
+# PACKAGE ####################################################################
+
+PACKAGE=Qt
+DEPENDENCIES="Freetype FontConfig PCRE OpenSSL"
+
+# SETUP ######################################################################
+
+set -e
+cd `dirname "$0"`
+PREFIX=`pwd`
+
+if [ -e ".${PACKAGE}-BUILT" ]; then
+    exit 0
+fi
+
+# DEPENDENCIES ###############################################################
+
+build_deps $DEPENDENCIES
+
+# FETCH SOURCE ###############################################################
+
+mkdir -p build
+cd build
+
+PACKAGE_URL_REF="${PACKAGE}_URL"
+PACKAGE_URL="${!PACKAGE_URL_REF}"
+PACKAGE_DIR_REF="${PACKAGE}_DIR"
+PACKAGE_DIR="${!PACKAGE_DIR_REF}"
+PACKAGE_EXTRACT_REF="${PACKAGE}_EXTRACT"
+PACKAGE_EXTRACT="${!PACKAGE_EXTRACT_REF}"
+PACKAGE_FILENAME=`basename ${PACKAGE_URL}`
+
+if [ ! -e "${PACKAGE_FILENAME}" ]; then
+    echo "Fetching ${PACKAGE_URL} ..."
+    curl -L -O "${PACKAGE_URL}"
+fi
+
+if [ ! -e "${PACKAGE_DIR}" ]; then
+    echo "Extracting ${PACKAGE_FILENAME} ..."
+    ${PACKAGE_EXTRACT} "${PACKAGE_FILENAME}"
+fi
+
+echo "Building ${PACKAGE} ..."
+cd ${PACKAGE_DIR}
+
+# BUILD STEPS ###############################################################
+
+if [ x"$Qt_OPENSOURCE" = x"1" ]; then
+    QT_TYPE="-opensource -confirm-license"
+else
+    QT_TYPE="-commercial"
+fi
+
+
+SKIP=""
+for i in 3d activeqt androidextras connectivity declarative enginio doc \
+         location quick1 quickcontrols serialport wayland webchannel webengine \
+         xmlpatterns; do
+    SKIP=" $SKIP -skip $i "
+done
+
+
+CONFIGURE_OPTIONS="${QT_TYPE} \
+    -shared \
+    -qt-libpng \
+    -no-harfbuzz \
+    -no-dbus \
+    -no-sql-db2 \
+    -no-sql-ibase \
+    -no-sql-mysql \
+    -no-sql-oci \
+    -no-sql-odbc \
+    -no-sql-psql \
+    -no-sql-sqlite \
+    -no-sql-sqlite2 \
+    -no-sql-tds \
+    -fontconfig \
+    $SKIP \
+    -nomake examples"
+
+# default extra options are for non-windows
+CONFIGURE_EXTRA_OPTIONS="\
+    -rpath"
+
+
+
+CONFIGURE_PROG="./configure"
+MAKE_COMMAND="make -j3"
+INSTALL_COMMAND="make install"
+
+if [ x"${ARCH}" = x"Darwin" ]; then
+    export MACOSX_DEPLOYMENT_TARGET=$CMAKE_OSX_DEPLOYMENT_TARGET
+    export MACOSX_SYSROOT=$CMAKE_OSX_SYSROOT
+    MACOSX_ARCHFLAGS=""
+    for archflag in $CMAKE_OSX_ARCHITECTURES; do
+        MACOSX_ARCHFLAGS+="-arch $archflag "
+    done;
+    export MACOSX_ARCHFLAGS
+    #export CFLAGS="-isysroot $MACOSX_SYSROOT $MACOSX_ARCHFLAGS -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET $CFLAGS"
+    #export CXXFLAGS="-isysroot $MACOSX_SYSROOT $MACOSX_ARCHFLAGS -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET $CXXFLAGS"
+    #export LDFLAGS="$MACOSX_ARCHFLAGS -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET $LDFLAGS"
+
+    CONFIGURE_EXTRA_OPTIONS+="\
+	-prefix ${PREFIX}/build \
+	-libdir $PREFIX/lib \
+	-L $PREFIX/lib \
+	-plugindir $PREFIX/lib \
+	-headerdir $PREFIX/include \
+	-I $PREFIX/include \
+	-bindir $PREFIX/bin \
+	-debug-and-release \
+	$MACOSX_ARCHFLAGS \
+	-openssl \
+	-system-zlib \
+	-no-framework"
+
+    #if [ x"$MACOSX_SYSROOT" != x"/" ]; then
+    #    CONFIGURE_EXTRA_OPTIONS+="-sdk $MACOSX_SYSROOT "
+    #fi
+
+    patch -p1 <<'EOF'
+$ diff -Nauw qt-everywhere-opensource-src-5.3.2/qtbase/mkspecs/features/create_cmake_original.prf qt-everywhere-opensource-src-5.3.2/qtbase/mkspecs/features/create_cmake.prf
+--- qt-everywhere-opensource-src-5.3.2/qtbase/mkspecs/features/create_cmake_original.prf	2015-05-15 02:55:02.000000000 +0100
++++ qt-everywhere-opensource-src-5.3.2/qtbase/mkspecs/features/create_cmake.prf	2015-05-15 02:54:31.000000000 +0100
+@@ -144,7 +144,7 @@
+             else: CMAKE_PlUGIN_EXT = .a
+
+             CMAKE_PLUGIN_LOCATION_RELEASE = $$PLUGIN_TYPE/lib$${TARGET}$${CMAKE_PlUGIN_EXT}
+-            CMAKE_PLUGIN_LOCATION_DEBUG = $$PLUGIN_TYPE/lib$${TARGET}$${CMAKE_PlUGIN_EXT}
++            CMAKE_PLUGIN_LOCATION_DEBUG = $$PLUGIN_TYPE/lib$${TARGET}_debug$${CMAKE_PlUGIN_EXT}
+         } else {
+             isEmpty(CMAKE_STATIC_TYPE): CMAKE_PlUGIN_EXT = .so
+             else: CMAKE_PlUGIN_EXT = .a
+EOF
+
+    patch -p1 <<'EOF'
+$ diff -Nauw qt-everywhere-opensource-src-5.4.1/qtlocation/src/3rdparty/poly2tri/poly2tri.original.pro qt-everywhere-opensource-src-5.4.1/qtlocation/src/3rdparty/poly2tri/poly2tri.pro
+--- qt-everywhere-opensource-src-5.4.1/qtlocation/src/3rdparty/poly2tri/poly2tri.original.pro     2015-05-15 19:29:48.000000000 +0100
++++ qt-everywhere-opensource-src-5.4.1/qtlocation/src/3rdparty/poly2tri/poly2tri.pro      2015-05-15 19:30:54.000000000 +0100
+@@ -7,6 +7,9 @@
+ # workaround for QTBUG-31586
+ contains(QT_CONFIG, c++11): CONFIG += c++11
+
++contains(QT_CONFIG, debug_and_release): CONFIG += debug_and_release
++contains(QT_CONFIG, build_all): CONFIG += build_all
++
+ *-g++* {
+     QMAKE_CXXFLAGS += -O3 -ftree-vectorize -ffast-math -funsafe-math-optimizations -Wno-error=return-type
+ }
+EOF
+
+elif [ x"${ARCH}" = x"Windows" ]; then
+    unset QTDIR
+    #rm -Rf ${PREFIX}/Qt
+    #mv ${PACKAGE_DIR} ${PREFIX}/Qt
+    #cd ${PREFIX}/Qt
+
+    CONFIGURE_PROG="./configure.exe"
+    CONFIGURE_EXTRA_OPTIONS="\
+    -qt-zlib \
+    -debug-and-release \
+	-prefix ${PREFIX} \
+	-no-mmx \
+	-no-3dnow \
+	-no-sse \
+	-no-sse2 \
+	-openssl \
+	-platform win32-g++-4.6"
+
+    export INCLUDE="${PREFIX}/include"
+    export LIB="${PREFIX}/lib"
+    MAKE_COMMAND="make"
+	PRE_MAKE_COMMAND="cp -R mkspecs ${PREFIX}/"
+    INSTALL_COMMAND="make install"
+else
+    CONFIGURE_EXTRA_OPTIONS+="\
+    -debug-and-release \
+	-prefix ${PREFIX}/build \
+	-libdir $PREFIX/lib \
+	-plugindir $PREFIX/lib \
+	-headerdir $PREFIX/include \
+	-bindir $PREFIX/bin \
+    -no-exceptions \
+	-no-mmx \
+	-no-3dnow \
+	-no-sse \
+	-no-sse2"
+fi
+
+# Fix the text layout bug that prevents hyphenation
+#patch -p1 <<'EOF'
+#$ diff -Nauw qt-everywhere-opensource-src-4.8.4/src/corelib/tools/qtextboundaryfinder.cpp.original qt-everywhere-opensource-src-4.8.4/src/corelib/tools/qtextboundaryfinder.cpp
+#--- qt-everywhere-opensource-src-4.8.4/src/corelib/tools/qtextboundaryfinder.cpp	2009-08-17 16:45:40.000000000 +0100
+#+++ qt-everywhere-opensource-src-4.8.4/src/corelib/tools/qtextboundaryfinder.cpp.original	2009-08-17 16:43:45.000000000 +0100
+#@@ -369,7 +369,7 @@
+#         break;
+#     case Line:
+#         Q_ASSERT(pos);
+#-        while (pos < length && d->attributes[pos-1].lineBreakType < HB_Break)
+#+        while (pos < length && d->attributes[pos-1].lineBreakType < HB_SoftHyphen)
+#             ++pos;
+#         break;
+#     }
+#EOF
+
+echo ${CONFIGURE_PROG} ${CONFIGURE_OPTIONS} ${CONFIGURE_EXTRA_OPTIONS}
+${CONFIGURE_PROG} ${CONFIGURE_OPTIONS} ${CONFIGURE_EXTRA_OPTIONS}
+${PRE_MAKE_COMMAND}
+${MAKE_COMMAND}
+${INSTALL_COMMAND}
+
+##############################################################################
+
+cd "${PREFIX}"
+touch ".${PACKAGE}-BUILT"
+
+##############################################################################
